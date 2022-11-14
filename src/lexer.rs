@@ -151,8 +151,8 @@ impl<'a, const LOOKAHEAD: usize> Lexer<'a, LOOKAHEAD> {
         }
         T::parse(self.index, self.input).map(|res| {
             res.map(|val| {
-                self.index = val.1;
-                self.input = &self.input[self.index..];
+                self.index += val.1;
+                self.input = &self.input[val.1..];
                 self.trim();
                 val.0
             })
@@ -161,7 +161,7 @@ impl<'a, const LOOKAHEAD: usize> Lexer<'a, LOOKAHEAD> {
     fn trim(&mut self) {
         while self.input.starts_with(char::is_whitespace) {
             self.index += 1;
-            self.input = &self.input[self.index..];
+            self.input = &self.input[1..];
         }
     }
 }

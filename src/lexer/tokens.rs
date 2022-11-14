@@ -10,8 +10,8 @@ macro_rules! simple_token {
                 Self: Sized,
             {
                 input.strip_prefix($token).map(|new| {
-                    let end = start + (input.len() - new.len());
-                    Ok((Self(start..end), end))
+                    let consumed = input.len() - new.len();
+                    Ok((Self(start..start + consumed), consumed))
                 })
             }
         }
