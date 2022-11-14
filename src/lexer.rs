@@ -85,6 +85,13 @@ pub struct Lexer<'a, const LOOKAHEAD: usize> {
     buf: heapless::Deque<TokenBox, LOOKAHEAD>,
 }
 impl<'a, const LOOKAHEAD: usize> Lexer<'a, LOOKAHEAD> {
+    pub fn new(input: &'a str) -> Self {
+        Self {
+            input,
+            index: 0,
+            buf: heapless::Deque::new(),
+        }
+    }
     /// ## Panics
     /// Panics if size or align of `T` > 16
     pub fn peek<T: Token + 'static>(&mut self) -> Option<Result<&T>> {
@@ -156,5 +163,31 @@ impl<'a, const LOOKAHEAD: usize> Lexer<'a, LOOKAHEAD> {
             self.index += 1;
             self.input = &self.input[self.index..];
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{tokens::*, *};
+
+    #[test]
+    fn lexer() {
+        let mut lexer = Lexer::<1>::new("++ -- ** //");
+        let first: Plus = lexer.get().unwrap().unwrap();
+        let second: Plus = lexer.get().unwrap().unwrap();
+        assert_eq!(first.span(), 0..1);
+        assert_eq!(second.span(), 1..2);
+        let first: Minus = lexer.get().unwrap().unwrap();
+        let second: Minus = lexer.get().unwrap().unwrap();
+        assert_eq!(first.span(), 3..4);
+        assert_eq!(second.span(), 4..5);
+        let first: Star = lexer.get().unwrap().unwrap();
+        let second: Star = lexer.get().unwrap().unwrap();
+        assert_eq!(first.span(), 6..7);
+        assert_eq!(second.span(), 7..8);
+        let first: Slash = lexer.get().unwrap().unwrap();
+        let second: Slash = lexer.get().unwrap().unwrap();
+        assert_eq!(first.span(), 9..10);
+        assert_eq!(second.span(), 10..11);
     }
 }
