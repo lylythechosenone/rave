@@ -1,36 +1,16 @@
 pub mod tokens;
 
 use crate::error::Result;
-use core::{
-    any::{Any, TypeId},
-    mem::MaybeUninit,
-    ops::Range,
-};
+use core::ops::Index;
+use core::{any::TypeId, mem::MaybeUninit, ops::Range};
 
-pub trait Token: AsAny {
+pub trait Token: 'static {
     // dyn-able
-    fn span(&self) -> Range<usize>;
+    fn span(&self) -> &Range<usize>;
     // not dyn-able
     fn parse(start: usize, input: &str) -> Option<Result<(Self, usize)>>
     where
         Self: Sized;
-}
-pub trait AsAny {
-    fn as_any(&self) -> &dyn Any;
-    fn type_id() -> TypeId
-    where
-        Self: Sized;
-}
-impl<T: Any + Token> AsAny for T {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-    fn type_id() -> TypeId
-    where
-        Self: Sized,
-    {
-        TypeId::of::<Self>()
-    }
 }
 
 #[repr(align(16))]
@@ -43,6 +23,8 @@ pub struct TokenBox {
     type_id: TypeId,
 }
 impl TokenBox {
+    /// # Safety
+    /// `data` is assumed to be `T`
     pub unsafe fn downcast<T>(self) -> T {
         let mut result = MaybeUninit::uninit();
         let src = &self.data as *const _ as *const u8;
@@ -52,9 +34,13 @@ impl TokenBox {
         }
         result.assume_init()
     }
+    /// # Safety
+    /// `data` is assumed to be `T`
     pub unsafe fn downcast_ref<T>(&self) -> &T {
         unsafe { &*(&self.data as *const _ as *const T) }
     }
+    /// # Safety
+    /// `data` is assumed to be `T`
     pub unsafe fn downcast_mut<T>(&mut self) -> &mut T {
         unsafe { &mut *(&mut self.data as *mut _ as *mut T) }
     }
@@ -95,17 +81,14 @@ impl<'a, const LOOKAHEAD: usize> Lexer<'a, LOOKAHEAD> {
     /// ## Panics
     /// Panics if size or align of `T` > 16
     pub fn peek<T: Token + 'static>(&mut self) -> Option<Result<&T>> {
-        if !self.buf.is_empty() {
-            if self.buf.back().unwrap().is::<T>() {
-                let val = self.buf.back().unwrap();
-                let downcasted = unsafe { val.downcast_ref::<T>() };
-                return Some(Ok(downcasted));
-            }
+        if !self.buf.is_empty() && self.buf.back().unwrap().is::<T>() {
+            let val = self.buf.back().unwrap();
+            let downcasted = unsafe { val.downcast_ref::<T>() };
+            return Some(Ok(downcasted));
         }
-        let token = match T::parse(self.index, self.input) {
+        let token = match T::parse(self.index, &self.input[self.index..]) {
             Some(Ok(token)) => {
                 self.index = token.1;
-                self.input = &self.input[self.index..];
                 self.trim();
                 TokenBox::new(token.0)
             }
@@ -120,18 +103,15 @@ impl<'a, const LOOKAHEAD: usize> Lexer<'a, LOOKAHEAD> {
     /// - `n - 1` has not been previously peeked.
     /// - size or align of `T` > 16
     pub fn peek_n<T: Token + 'static>(&mut self, n: usize) -> Option<Result<&T>> {
-        if self.buf.len() > n {
-            if self.buf.iter().nth(n).unwrap().is::<T>() {
-                let val = self.buf.iter().nth(n).unwrap();
-                let downcasted = unsafe { val.downcast_ref::<T>() };
-                return Some(Ok(downcasted));
-            }
+        if self.buf.len() > n && self.buf.iter().nth(n).unwrap().is::<T>() {
+            let val = self.buf.iter().nth(n).unwrap();
+            let downcasted = unsafe { val.downcast_ref::<T>() };
+            return Some(Ok(downcasted));
         }
         assert_eq!(self.buf.len(), n);
-        let token = match T::parse(self.index, self.input) {
+        let token = match T::parse(self.index, &self.input[self.index..]) {
             Some(Ok(token)) => {
                 self.index = token.1;
-                self.input = &self.input[self.index..];
                 self.trim();
                 TokenBox::new(token.0)
             }
@@ -142,27 +122,35 @@ impl<'a, const LOOKAHEAD: usize> Lexer<'a, LOOKAHEAD> {
         Some(Ok(unsafe { self.buf.back().unwrap().downcast_ref() }))
     }
     pub fn get<T: Token + 'static>(&mut self) -> Option<Result<T>> {
-        if !self.buf.is_empty() {
-            if self.buf.iter().last().unwrap().is::<T>() {
-                let val = self.buf.pop_front().unwrap();
-                let downcasted = unsafe { val.downcast::<T>() };
-                return Some(Ok(downcasted));
-            }
+        if !self.buf.is_empty() && self.buf.iter().last().unwrap().is::<T>() {
+            let val = self.buf.pop_front().unwrap();
+            let downcasted = unsafe { val.downcast::<T>() };
+            return Some(Ok(downcasted));
         }
-        T::parse(self.index, self.input).map(|res| {
+        T::parse(self.index, &self.input[self.index..]).map(|res| {
             res.map(|val| {
                 self.index += val.1;
-                self.input = &self.input[val.1..];
                 self.trim();
                 val.0
             })
         })
     }
     fn trim(&mut self) {
-        while self.input.starts_with(char::is_whitespace) {
-            self.index += 1;
-            self.input = &self.input[1..];
+        for (i, c) in self.input[self.index..].char_indices() {
+            if !c.is_whitespace() {
+                self.index += i;
+                return;
+            }
         }
+    }
+}
+impl<'a, const LOOKAHEAD: usize, T> Index<T> for Lexer<'a, LOOKAHEAD>
+where
+    str: Index<T>,
+{
+    type Output = <str as Index<T>>::Output;
+    fn index(&self, index: T) -> &Self::Output {
+        &self.input[index]
     }
 }
 
@@ -172,22 +160,14 @@ mod tests {
 
     #[test]
     fn lexer() {
-        let mut lexer = Lexer::<1>::new("++ -- ** //");
-        let first: Plus = lexer.get().unwrap().unwrap();
-        let second: Plus = lexer.get().unwrap().unwrap();
-        assert_eq!(first.span(), 0..1);
-        assert_eq!(second.span(), 1..2);
-        let first: Minus = lexer.get().unwrap().unwrap();
-        let second: Minus = lexer.get().unwrap().unwrap();
-        assert_eq!(first.span(), 3..4);
-        assert_eq!(second.span(), 4..5);
-        let first: Star = lexer.get().unwrap().unwrap();
-        let second: Star = lexer.get().unwrap().unwrap();
-        assert_eq!(first.span(), 6..7);
-        assert_eq!(second.span(), 7..8);
-        let first: Slash = lexer.get().unwrap().unwrap();
-        let second: Slash = lexer.get().unwrap().unwrap();
-        assert_eq!(first.span(), 9..10);
-        assert_eq!(second.span(), 10..11);
+        let mut lexer = Lexer::<1>::new("a + b == 0x100");
+        let a = lexer.get::<Ident>().unwrap().unwrap();
+        let _plus = lexer.get::<Plus>().unwrap().unwrap();
+        let b = lexer.get::<Ident>().unwrap().unwrap();
+        let _eq = lexer.get::<EqualEqual>().unwrap().unwrap();
+        let c = lexer.get::<Number>().unwrap().unwrap();
+        assert_eq!(a.eval(&lexer), "a");
+        assert_eq!(b.eval(&lexer), "b");
+        assert_eq!(c.eval::<1, u32>(&lexer), 0x100);
     }
 }
